@@ -40,7 +40,7 @@ class UserData(BaseModel):
 def dapatkan_token_oauth2():
     try:
         url = "https://oauth.fatsecret.com/connect/token"
-        payload = {'grant_type': 'client_credentials', 'scope': 'basic'}
+        payload = {'grant_type': 'client_credentials', 'scope': 'premier'}
         response = requests.post(url, data=payload, auth=(CLIENT_ID, CLIENT_SECRET))
         if response.status_code == 200:
             return response.json().get('access_token')
