@@ -48,7 +48,35 @@ def dapatkan_token_oauth2():
         pass
     return None
 
-# --- FUNGSI BULK (SCAN LEBIH BANYAK) ---
+# --- FUNGSI PARSE HASIL API ---
+def parse_fatsecret_items(foods, query):
+    """Parse list of food items dari response FatSecret API."""
+    hasil = []
+    for item in foods:
+        nama = item.get('food_name', '')
+        brand = item.get('brand_name', '')
+        desc = item.get('food_description', '')
+        
+        makanan = {
+            "id": int(item['food_id']),
+            "nama_makanan": f"{nama} ({brand})" if brand else nama,
+            "kalori": 0, "protein": 0, "karbo": 0, "lemak": 0,
+            "sumber": "api"
+        }
+        try:
+            if 'Calories:' in desc:
+                makanan['kalori'] = float(desc.split('Calories: ')[1].split('kcal')[0])
+            if 'Protein:' in desc:
+                makanan['protein'] = float(desc.split('Protein: ')[1].split('g')[0])
+            if 'Carbs:' in desc:
+                makanan['karbo'] = float(desc.split('Carbs: ')[1].split('g')[0])
+            if 'Fat:' in desc:
+                makanan['lemak'] = float(desc.split('Fat: ')[1].split('g')[0])
+        except: pass
+        hasil.append(makanan)
+    return hasil
+
+# --- FUNGSI BULK (DUAL SEARCH: REGIONAL + GLOBAL) ---
 def cari_di_fatsecret_bulk(query):
     token = dapatkan_token_oauth2()
     if not token: return []
@@ -56,69 +84,41 @@ def cari_di_fatsecret_bulk(query):
     url = "https://platform.fatsecret.com/rest/server.api"
     headers = {'Authorization': f'Bearer {token}'}
     
+    seen_ids = set()
     hasil_bulk = []
     
-    # Kita ambil cukup banyak data di awal agar pagination lancar
-    max_scan_pages = 3 
-
+    # Konfigurasi pencarian: Coba regional dulu, lalu global
+    search_configs = [
+        {"region": "ID", "language": "id"},   # 1. Cari di database Indonesia
+        {},                                     # 2. Cari di database Global
+    ]
+    
     try:
-        for api_page in range(max_scan_pages):
-            params = {
-                "method": "foods.search",
-                "search_expression": query,
-                "format": "json",
-                "max_results": 50,
-                "page_number": api_page,
-                "region": "ID",        # Filter ke database Indonesia
-                "language": "id"       # Bahasa Indonesia
-            }
-            response = requests.get(url, headers=headers, params=params)
-            
-            if response.status_code == 200:
-                data = response.json()
-                foods = data.get("foods", {}).get("food", [])
-                if isinstance(foods, dict): foods = [foods]
-                if not foods: break 
+        for config in search_configs:
+            for api_page in range(3):  # max 3 halaman per search
+                params = {
+                    "method": "foods.search",
+                    "search_expression": query,
+                    "format": "json",
+                    "max_results": 50,
+                    "page_number": api_page,
+                    **config  # Tambahkan region/language jika ada
+                }
+                response = requests.get(url, headers=headers, params=params)
                 
-                for item in foods:
-                    # Ambil data mentah
-                    nama = item.get('food_name', '')
-                    brand = item.get('brand_name', '')
-                    desc = item.get('food_description', '')
+                if response.status_code == 200:
+                    data = response.json()
+                    foods = data.get("foods", {}).get("food", [])
+                    if isinstance(foods, dict): foods = [foods]
+                    if not foods: break 
                     
-                    # Filter sederhana
-                    teks_lengkap = (nama + " " + brand).lower()
-                    kata_kunci = query.lower().split()
+                    items = parse_fatsecret_items(foods, query)
+                    for item in items:
+                        if item['id'] not in seen_ids:
+                            seen_ids.add(item['id'])
+                            hasil_bulk.append(item)
+                else: break
                     
-                    is_relevant = False
-                    matches = 0
-                    for k in kata_kunci:
-                        if k in teks_lengkap: matches += 1
-                    
-                    if len(kata_kunci) == 1:
-                        if matches >= 1: is_relevant = True
-                    else:
-                        if matches >= 1: is_relevant = True 
-
-                    if is_relevant:
-                        makanan = {
-                            "id": int(item['food_id']),
-                            "nama_makanan": f"{nama} ({brand})" if brand else nama,
-                            "kalori": 0, "protein": 0, "karbo": 0, "lemak": 0,
-                            "sumber": "api"
-                        }
-                        try:
-                            if 'Calories:' in desc:
-                                makanan['kalori'] = float(desc.split('Calories: ')[1].split('kcal')[0])
-                            if 'Protein:' in desc:
-                                makanan['protein'] = float(desc.split('Protein: ')[1].split('g')[0])
-                            if 'Carbs:' in desc:
-                                makanan['karbo'] = float(desc.split('Carbs: ')[1].split('g')[0])
-                            if 'Fat:' in desc:
-                                makanan['lemak'] = float(desc.split('Fat: ')[1].split('g')[0])
-                        except: pass
-                        hasil_bulk.append(makanan)
-            else: break
         return hasil_bulk
     except: return []
 
