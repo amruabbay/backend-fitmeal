@@ -68,7 +68,9 @@ def cari_di_fatsecret_bulk(query):
                 "search_expression": query,
                 "format": "json",
                 "max_results": 50,
-                "page_number": api_page 
+                "page_number": api_page,
+                "region": "ID",        # Filter ke database Indonesia
+                "language": "id"       # Bahasa Indonesia
             }
             response = requests.get(url, headers=headers, params=params)
             
@@ -164,6 +166,61 @@ def get_rekomendasi(user: UserData):
         "menu": menu_terbaik
     }
 
+# --- FUNGSI SCORING RELEVANSI PENCARIAN ---
+def hitung_skor_relevansi(nama_makanan: str, query: str) -> int:
+    """
+    Menghitung skor relevansi sebuah makanan terhadap kata kunci pencarian.
+    Skor LEBIH TINGGI = LEBIH RELEVAN (ditampilkan lebih atas).
+    
+    Sistem Poin:
+    - Nama persis sama dengan query          → +1000
+    - Nama diawali dengan query              → +500
+    - Semua kata kunci ada di nama            → +200
+    - Setiap kata kunci yang cocok            → +50
+    - Kata kunci muncul sebagai kata utuh     → +30 per kata
+    - Posisi kata kunci lebih awal di nama    → +20
+    - Nama lebih pendek (lebih spesifik)      → +10
+    """
+    nama_lower = nama_makanan.lower().strip()
+    query_lower = query.lower().strip()
+    keywords = query_lower.split()
+    
+    skor = 0
+    
+    # 1. EXACT MATCH — nama persis sama
+    if nama_lower == query_lower:
+        skor += 1000
+    
+    # 2. STARTS WITH — nama diawali query lengkap
+    if nama_lower.startswith(query_lower):
+        skor += 500
+    
+    # 3. ALL KEYWORDS MATCH — semua kata kunci ada
+    matches = sum(1 for k in keywords if k in nama_lower)
+    if matches == len(keywords):
+        skor += 200
+    
+    # 4. PER-KEYWORD MATCH — setiap kata yang cocok
+    skor += matches * 50
+    
+    # 5. WHOLE WORD MATCH — kata kunci muncul sebagai kata utuh
+    nama_words = nama_lower.split()
+    for k in keywords:
+        if k in nama_words:
+            skor += 30
+    
+    # 6. POSISI AWAL — kata kunci muncul di awal nama
+    for k in keywords:
+        pos = nama_lower.find(k)
+        if pos >= 0 and pos < 5:  # Muncul di 5 karakter pertama
+            skor += 20
+    
+    # 7. NAMA PENDEK BONUS — nama yang lebih pendek biasanya lebih spesifik
+    if len(nama_lower) < 25:
+        skor += 10
+    
+    return skor
+
 # --- ENDPOINT SEARCH (SERVER SIDE PAGINATION) ---
 @app.get("/search")
 def cari_makanan(
@@ -201,14 +258,18 @@ def cari_makanan(
         print(f"Error DB Lokal: {e}")
 
     # 2. AMBIL DARI API (Bulk Fetch)
-    # Catatan: Kita fetch agak banyak di sini supaya saat user minta 'page 1' atau 'page 2',
-    # datanya tersedia di list gabungan ini.
     api_results = cari_di_fatsecret_bulk(q)
     
     # 3. GABUNGKAN SEMUA HASIL
     master_list = local_results + api_results
     
-    # 4. POTONG DATA (SLICING) SESUAI PAGE & LIMIT
+    # 4. URUTKAN BERDASARKAN SKOR RELEVANSI (TINGGI → RENDAH)
+    master_list.sort(
+        key=lambda item: hitung_skor_relevansi(item['nama_makanan'], q),
+        reverse=True
+    )
+    
+    # 5. POTONG DATA (SLICING) SESUAI PAGE & LIMIT
     start_index = page * limit
     end_index = start_index + limit
     
